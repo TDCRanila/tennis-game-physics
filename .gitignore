@@ -642,6 +642,7 @@ FodyWeavers.xsd
 
 ### Project
 build
+build-output
 
 .kanbn
 
