@@ -1,6 +1,7 @@
-#include "DFW/Utility/ColourUtility.h"
-#include "DFW/Utility/JoltUtility.h"
+#include <DFW/Utility/ColourUtility.h>
+#include <DFW/Utility/JoltUtility.h>
 #include <DFW/Defines/Defines.h>
+
 #include <Game/Game.h>
 
 #include <DFW/GameWorld/Camera/CameraSystem.h>
@@ -12,6 +13,9 @@
 #include <DFW/GameWorld/Graphics/ModelComponent.h>
 #include <DFW/GameWorld/Physics/PhysicsSystem.h>
 
+#include <DFW/GameWorld/Editor/GameViewport.h>
+#include <DFW/Modules/Editor/EditorElementFiller.h>
+
 #include <DFW/Modules/ECS/Managers/SystemManager.h>
 #include <DFW/Modules/Resource/Mesh/MeshLoader.h>
 
@@ -20,6 +24,10 @@
 #include <DFW/CoreSystems/GameClock.h>
 
 #include <DFW/Utility/FilePath.h>
+
+#include <asm-generic/errno.h>
+#include <imgui/imgui.h>
+#include <imgui/imgui_internal.h>
 
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
@@ -83,6 +91,7 @@ namespace Game
 
     TennisGame::TennisGame(std::string const& a_stage_name, bool a_start_disabled)
         : DFW::StageBase(a_stage_name, a_start_disabled)
+        , _has_dockspace_been_created(false)
     {
     }
 
@@ -198,6 +207,47 @@ namespace Game
         DFW::CoreService::GetGameClock()->Debug_LogInfo();
 
         _ecs->UpdateECS();
+
+        _element_container.UpdateElements();
+    }
+
+    void TennisGame::OnRenderImGui()
+    {
+            DFW_ASSERT(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DockingEnable);
+
+            ImGuiViewport const* viewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(viewport->Pos);
+            ImGui::SetNextWindowSize(viewport->Size);
+            ImGui::SetNextWindowViewport(viewport->ID);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+
+            ImGuiWindowFlags const dockspace_window_flags =
+                ImGuiWindowFlags_MenuBar
+                | ImGuiWindowFlags_NoDocking
+                | ImGuiWindowFlags_NoTitleBar
+                | ImGuiWindowFlags_NoCollapse
+                | ImGuiWindowFlags_NoResize
+                | ImGuiWindowFlags_NoMove
+                | ImGuiWindowFlags_NoBringToFrontOnFocus
+                | ImGuiWindowFlags_NoNavFocus
+                | ImGuiWindowFlags_NoBackground;
+
+            { // Dockspace Window.
+                ImGui::Begin("Window-DockSpace", nullptr, dockspace_window_flags);
+                ImGui::PopStyleVar();
+                ImGui::PopStyleVar(2);
+
+                SetupDockingSpace();
+
+                ImGui::End();
+            }
+
+            // Sub Elements
+            _element_container.DisplayElements();
+
+            _ecs->UpdateECSImGui();
     }
 
     void TennisGame::OnAttached()
@@ -224,11 +274,25 @@ namespace Game
             camera_component.angles.x = -40.f;
             camera_component.angles.y = -45.f;
         }
+
+        // Add Editor Elements.
+        _element_container.AddEditorElement<DFW::DEditor::EditorElementFiller>("Toolbar");
+        DFW::DEditor::GameViewport& game_viewport = _element_container.AddEditorElement<DFW::DEditor::GameViewport>("Viewport");
+
+        // Set Render Targets of render systems.
+        DFW::SharedPtr<DFW::DRender::RenderTarget const> viewport_render_target = game_viewport.GetViewportRenderTarget();
+        auto rs = _ecs->SystemManager().GetSystem<DFW::RenderSystem>();
+        rs->RenderToRenderTarget(viewport_render_target);
+        auto drs = _ecs->SystemManager().GetSystem<DFW::DebugRenderSystem>();
+        drs->RenderToRenderTarget(viewport_render_target);
+
     }
 
     void TennisGame::OnRemoved()
     {
         _ecs->Terminate();
+
+        _element_container.ReleaseEditorElements();
     }
 
     void TennisGame::SetupECS()
@@ -253,6 +317,51 @@ namespace Game
         ps.debug_draw_settings.mDrawBoundingBox = true;
         ps.debug_draw_settings.mDrawVelocity = true;
         ps.debug_draw_settings.mDrawCenterOfMassTransform = true;
+    }
+
+    void TennisGame::SetupDockingSpace()
+    {
+                    // DockSpace
+            ImGuiID dockspace_id = ImGui::GetID("Main-DockSpace");
+            ImGuiDockNodeFlags const dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode;
+            ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+
+            if (!_has_dockspace_been_created)
+            {
+                _has_dockspace_been_created = true;
+
+                ImGui::DockBuilderRemoveNode(dockspace_id); // clear any previous layout
+                ImGui::DockBuilderAddNode(dockspace_id, dockspace_flags | ImGuiDockNodeFlags_DockSpace);
+                ImGui::DockBuilderSetNodeSize(dockspace_id, ImGui::GetMainViewport()->Size);
+
+                // split the dockspace into 2 nodes -- DockBuilderSplitNode takes in the following args in the following order
+                //  window ID to split, direction, fraction (between 0 and 1), the final two setting let's us choose which id we want (which ever one we DON'T set as NULL, will be returned by the function)
+                // out_id_at_dir is the id of the node in the direction we specified earlier, out_id_at_opposite_dir is in the opposite direction
+                // splitting these nodes should be/are done in correct order
+                ImGuiID const dock_id_top = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Up, 0.05f, nullptr, &dockspace_id);
+                ImGuiID const dock_id_right = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Right, 0.15f, nullptr, &dockspace_id);
+                ImGuiID const dock_id_bottom = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.25f, nullptr, &dockspace_id);
+                ImGuiID const dock_id_left = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.15f, nullptr, &dockspace_id);
+
+                ImGuiID const dock_id_up = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Up, 0.05f, nullptr, &dockspace_id);
+                ImGuiID const dock_id_down = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.25f, nullptr, &dockspace_id);
+
+                ImGuiID const dock_id_center = ImGui::DockBuilderGetCentralNode(dockspace_id)->ID;
+
+                // we now dock our windows into the docking node we made above
+                ImGui::DockBuilderDockWindow(/*"Top"*/"Toolbar", dock_id_top);
+                ImGui::DockBuilderDockWindow(/*"Bottom"*/"Console", dock_id_bottom);
+
+                ImGui::DockBuilderDockWindow("Left", dock_id_left);
+                ImGui::DockBuilderDockWindow(/*"Right"*/"Viewer", dock_id_right);
+
+                ImGui::DockBuilderDockWindow("Up", dock_id_up);
+                ImGui::DockBuilderDockWindow("Down", dock_id_down);
+
+                ImGui::DockBuilderDockWindow("Viewport", dock_id_center);
+
+                ImGui::DockBuilderFinish(dockspace_id);
+            }
     }
 
     void TennisGame::Debug_CreateXYZAxisOrigin()
