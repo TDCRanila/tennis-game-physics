@@ -1,3 +1,7 @@
 cd ..
 cd build
-start Tennis.sln
+if exist Tennis.sln (
+	start Tennis.sln
+) else (
+	start Tennis.slnx
+)
