@@ -24,7 +24,8 @@ if (MSVC)
     set_property(GLOBAL PROPERTY USE_FOLDERS ON)
     set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_PredfinedTargetsFolder")
     
-    #add_compile_definitions(/MP)
+    add_compile_options(/wd4865)
+    add_compile_options(/MP)
     add_link_options(/INCREMENTAL:NO)
 
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
